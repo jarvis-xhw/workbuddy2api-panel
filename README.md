@@ -1077,3 +1077,13 @@ sudo chown -R 10001:10001 ./auths ./data ./config.json
 Web 面板「账号池与流量治理」可分别配置策略和账号顺序，保存后热生效。闲置补偿与快过期积分加权仅影响加权随机。无地区上下文的旧 Pool 入口保留原行为；策略不会改变路由或自动跨地区借号。
 
 本功能不假定国际版免费模型已采用五小时限额；限流及恢复时间继续依据现有上游识别逻辑处理，不硬编码五小时。
+
+---
+
+## 本 fork 的集成说明
+
+本仓库是 `linguo2625469/workbuddy2api-panel` 的 fork，已吸收上游 25 个社区 PR
+（含国际版 11-128 通道校验、6021 队列满、静态 API Key 账号、积分历史、手机端适配等），
+并额外落地 issue #81 的 tool_call id 唯一化补丁。逐条清单、未合并 PR 的原因与冲突
+处理记录见 [docs/fork-integration-2026-10-20.md](docs/fork-integration-2026-10-20.md)。
+多池（Trae / ZCode / AutoClaw）大改位于独立分支 `feature/multi-pool-183`。
