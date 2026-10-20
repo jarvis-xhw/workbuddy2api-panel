@@ -24,13 +24,15 @@ func TestAppJSSyntax(t *testing.T) {
 	if err != nil {
 		t.Skip("node not available; skipping JS syntax check")
 	}
-	path, err := filepath.Abs("app.js")
-	if err != nil {
-		t.Fatal(err)
-	}
-	out, err := exec.Command(node, "--check", path).CombinedOutput()
-	if err != nil {
-		t.Fatalf("app.js syntax error:\n%s", out)
+	for _, name := range []string{"app.js", "mobile.js"} {
+		path, err := filepath.Abs(name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		out, err := exec.Command(node, "--check", path).CombinedOutput()
+		if err != nil {
+			t.Fatalf("%s syntax error:\n%s", name, out)
+		}
 	}
 }
 
@@ -91,6 +93,8 @@ const sandbox = new Proxy({
   fetch: () => new Promise(() => {}),
   addEventListener() {}, removeEventListener() {},
   matchMedia: () => ({ matches: false, addEventListener() {} }),
+  // mobile.js 顶层直接 new MutationObserver(...)（移动端表格字段名补标签）。
+  MutationObserver: class { constructor() {} observe() {} disconnect() {} takeRecords() { return []; } },
   setInterval, clearInterval, setTimeout, clearTimeout,
   console, JSON, Math, Date, Number, String, Boolean, Object, Array, Promise, Map, Set, RegExp, Error, TypeError, isNaN, parseInt, parseFloat, encodeURIComponent, decodeURIComponent, URL, Symbol, Proxy, Reflect,
 }, { get(t, k) { return t[k]; }, has() { return true; } });
@@ -1246,5 +1250,72 @@ func TestPanelRemarkAndFoldWiring(t *testing.T) {
 		if !bytes.Contains(js, []byte(want)) {
 			t.Fatalf("app.js 缺少 %s", want)
 		}
+	}
+}
+
+// TestMobileJSChartTooltipInsideBar 手机端自绘图表的 tooltip 同样要挂在柱子内部（issue #128）。
+//
+// mobile.js 在窄屏另画一张图（440×230），不走 app.js 的 renderUsageChart：上游修好
+// 桌面实现不会覆盖它。断言与 TestAppJSChartTooltipInsideBar 同构，只取文件里
+// 「接管 renderUsageChart」之后的部分，DOM/全局用桩喂进去。
+func TestMobileJSChartTooltipInsideBar(t *testing.T) {
+	node, err := exec.LookPath("node")
+	if err != nil {
+		t.Skip("node not installed; mobile chart tooltip test skipped")
+	}
+	script := `const fs = require('fs');
+const vm = require('vm');
+const src = fs.readFileSync(process.argv[2], 'utf8');
+const start = src.indexOf('const deskUsageChart');
+if (start < 0) throw new Error('mobile chart override not found');
+const sinks = {};
+const mk = id => (sinks[id] = { innerHTML: '', textContent: '' });
+const ctx = {
+  MOBILE_MQ: { matches: true },
+  renderUsageChart: () => {},
+  esc: s => String(s == null ? '' : s),
+  fmtTok: v => String(v == null ? 0 : v),
+  fmtTokTimeLabel: p => { const d = new Date(p.t.length === 13 ? p.t + ':00:00' : p.t + 'T00:00:00');
+                          return p.scope === 'day' ? (d.getMonth() + 1) + '-' + String(d.getDate()).padStart(2, '0')
+                                                   : String(d.getHours()).padStart(2, '0') + ':00'; },
+  parsePointTime: p => { const d = new Date(p.t.length === 13 ? p.t + ':00:00' : p.t + 'T00:00:00');
+                         return isNaN(d.getTime()) ? null : d.getTime(); },
+  $: id => (sinks[id] || mk(id)),
+  Date, Math, Number, String, Map, Array, Object, isNaN, Infinity, isFinite, Set,
+};
+vm.createContext(ctx);
+vm.runInContext(src.slice(start) + '\nthis.renderUsageChart = renderUsageChart;', ctx);
+const series = [];
+for (let h = 0; h < 5; h++) {
+  const d = new Date(); d.setHours(d.getHours() - (4 - h), 0, 0, 0);
+  const iso = d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' +
+              String(d.getDate()).padStart(2, '0') + 'T' + String(d.getHours()).padStart(2, '0');
+  series.push({ t: iso, scope: 'hour', prompt_tokens: (h + 1) * 100,
+                completion_tokens: (h + 1) * 10, total_tokens: (h + 1) * 110, requests: h + 1 });
+}
+ctx.renderUsageChart(series);
+const svg = sinks['usChart'] ? sinks['usChart'].innerHTML : '';
+const groups = svg.match(/<g><title>/g) || [];
+const titles = svg.match(/<title>[^<]*<\/title>/g) || [];
+const loose = (svg.match(/(?:<rect[^>]*\/>|<\/g>)<title>/g) || []).length;
+process.stdout.write(JSON.stringify({
+  points: series.length, groups: groups.length, titles: titles.length, loose: loose,
+}));`
+	f, err := os.CreateTemp(t.TempDir(), "mobilecharttip-*.cjs")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.WriteString(script); err != nil {
+		t.Fatal(err)
+	}
+	f.Close()
+	out, err := exec.Command(node, f.Name(), "mobile.js").CombinedOutput()
+	if err != nil {
+		t.Fatalf("mobile chart tooltip node test failed: %v\n%s", err, out)
+	}
+	const want = `{"points":5,"groups":5,"titles":5,"loose":0}`
+	if strings.TrimSpace(string(out)) != want {
+		t.Fatalf("mobile chart tooltip structure=%s\nwant %s（groups 应等于数据点数，loose 应为 0）",
+			strings.TrimSpace(string(out)), want)
 	}
 }
