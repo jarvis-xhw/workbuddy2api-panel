@@ -7,6 +7,7 @@ package upstream
 import (
 	"encoding/json"
 	"log"
+	"strconv"
 	"strings"
 )
 
@@ -66,6 +67,15 @@ func PrepareBodyOptWithEffortsAndDefault(src []byte, sanitize bool, efforts map[
 		msgs, _ = mergeAdjacentToolCalls(msgs)
 		msgs, _ = repackToolResultBlocks(msgs)
 		msgs, _ = cleanupOrphanToolCalls(msgs)
+		// 出站前 id 唯一化（issue #81）：部分客户端在构造请求时把 tool_call id
+		// 截断到固定长度，并行调用共享同一 uuid 前缀 → 多个 tool_calls 撞成同一个
+		// id，上游据此判「tool calls and tool results do not match」（400/11148）
+		// 并让整条会话持续 503。此处按出现顺序给第 2..n 个重命名，并同步改对应
+		// tool 结果的 tool_call_id——客户端缺陷不该让整条会话不可用。
+		msgs, n := dedupeToolCallIDs(msgs)
+		if n > 0 {
+			log.Printf("[payload] dedupe_tool_ids: repaired %d duplicate tool_call id(s) before upstream", n)
+		}
 		// 无改动时两步都返回原 slice，这里回写等于零操作；任一步重排/删除
 		// （哪怕后续步骤零改动）也必须落到 obj——不能只在「最后一步改动」时回写，
 		// 否则 repack 单独生效的结果会被原 slice 覆盖丢失。
@@ -488,4 +498,104 @@ func unescapePatternLiteralEscapes(node any) {
 			unescapePatternLiteralEscapes(v)
 		}
 	}
+}
+
+// dedupeToolCallIDs 让出站 messages 里的 tool_calls[].id 唯一，并同步到 tool 结果的
+// tool_call_id（issue #81 的现场结论）。
+//
+// 为什么需要：有的客户端（实测 DSH 适配器）在发请求前把 id 截断到 40 字符，同一批
+// 并行调用本应带 -0/-1/-2 后缀，截断后三条变成同一个 id。网关侧「配对」检查只看
+// 数量与位置，看不出 id 撞车；上游按 id 建映射，于是回 400 / code 11148
+// 「tool calls and tool results do not match」，且该会话之后每一轮都失败。
+//
+// 规则：按消息顺序扫描，某个 id 第 k 次出现（k≥2）时改成 "<id>-k"（若已占用则继续
+// 递增），并把随后对应位置的 tool 结果按同一顺序消费这个新 id。首个出现保留原值，
+// 因此对健康请求是零改动（幂等）。
+func dedupeToolCallIDs(msgs []any) ([]any, int) {
+	if len(msgs) == 0 {
+		return msgs, 0
+	}
+	// 全量 id 集合用于避碰（含 tool 结果侧，避免改出新撞车）。
+	used := make(map[string]bool, len(msgs))
+	collect := func() {
+		for _, m := range msgs {
+			mm, ok := m.(map[string]any)
+			if !ok {
+				continue
+			}
+			if calls, ok := mm["tool_calls"].([]any); ok {
+				for _, c := range calls {
+					if cm, ok := c.(map[string]any); ok {
+						if id, ok := cm["id"].(string); ok && id != "" {
+							used[id] = true
+						}
+					}
+				}
+			}
+			if id, ok := mm["tool_call_id"].(string); ok && id != "" {
+				used[id] = true
+			}
+		}
+	}
+	collect()
+
+	seen := make(map[string]int, 8)
+	pending := make(map[string][]string, 4)
+	changed := 0
+	for _, m := range msgs {
+		mm, ok := m.(map[string]any)
+		if !ok {
+			continue
+		}
+		role, _ := mm["role"].(string)
+		switch role {
+		case "assistant":
+			calls, ok := mm["tool_calls"].([]any)
+			if !ok {
+				continue
+			}
+			for _, c := range calls {
+				cm, ok := c.(map[string]any)
+				if !ok {
+					continue
+				}
+				id, _ := cm["id"].(string)
+				if id == "" {
+					continue
+				}
+				seen[id]++
+				if seen[id] == 1 {
+					// 首个出现保留原 id；同时把它排进消费队列的首位，
+					// 让第一条 tool 结果继续对上它（而不是被 -2 顶掉）。
+					pending[id] = append(pending[id], id)
+					continue
+				}
+				newID := id
+				for n := seen[id]; ; n++ {
+					cand := id + "-" + strconv.Itoa(n)
+					if !used[cand] {
+						newID = cand
+						break
+					}
+				}
+				used[newID] = true
+				cm["id"] = newID
+				pending[id] = append(pending[id], newID)
+				changed++
+			}
+		case "tool":
+			id, _ := mm["tool_call_id"].(string)
+			if id == "" {
+				continue
+			}
+			q := pending[id]
+			if len(q) == 0 {
+				continue
+			}
+			mm["tool_call_id"] = q[0]
+			pending[id] = q[1:]
+			changed++
+		}
+	}
+	return msgs, changed
 }
