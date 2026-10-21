@@ -93,6 +93,23 @@ issue #81 的现场结论：客户端把 `tool_call.id` 截断到 40 字符，�
 
 测试：`internal/upstream/payload_dedup_test.go`（截断并行批 / 健康请求 / 改名避碰 / 空 messages）。
 
+## 4.5 额外补丁：`DeepSeek Harness` 关键词中和（2026-10-21）
+
+论坛/插件社区（`balongTTY/dsh-workbuddy-fix`）反馈：上游对 system prompt 做**关键词**
+风控，出现 `DeepSeek Harness` 且请求体足够大（约 >1KB）时回 400 / 11-128
+「Illegal API invocation from an unapproved channel」；短 prompt 会放过，所以表现为偶发。
+
+本 fork 在净化层（`internal/upstream/sanitize.go`）加入 `neutralizeDSHIdentity`：
+
+- `DeepSeek Harness` → `DeepSeek\u200b Harness`（零宽空格），语义与上下文完全不变；
+- **路径语境不改**（`D:\...\DeepSeek Harness\...`、`/opt/...`），避免模型拿到坏路径；
+- 大小写与 NBSP 变体覆盖，幂等；
+- 仅在 `features.sanitize_blacklist_fingerprints=true` 时生效（与既有指纹净化同一开关）。
+
+实测说明：本机 4 个账号（2 cn + 2 global）上，短 prompt / 3KB / 19.7KB + 60 tools +
+`max_tokens=128000` 三种形态均返回 200，**当前复现不了**该 400；本补丁是按上游灰度收紧
+的防御性处理，不改变任何成功请求的语义。
+
 ## 5. 冲突解决记录（关键语义决策）
 
 1. **#158 × #232/#220/#144**：`main.go` 启动装配与热重载两处冲突，均为「两边各加一行

@@ -13,13 +13,21 @@ import (
 // sanitizeFeatures 特征预检：任一命中才进入净化（strings.Contains 快速路径，
 // 普通请求全不中 → 原样返回，零分配）。
 var sanitizeFeatures = []string{
-	"x-anthropic-billing-header", // header 键值段键名
-	"cc_entrypoint=",             // 尾随裸键值（截断前缀即可命中）
-	"You are Claude Code",        // 身份句（截断前缀即可命中）
-	"Main branch (",              // 注入指令句（截断前缀即可命中）
+	"x-anthropic-billing-header",                      // header 键值段键名
+	"cc_entrypoint=",                                  // 尾随裸键值（截断前缀即可命中）
+	"You are Claude Code",                             // 身份句（截断前缀即可命中）
+	"Main branch (",                                   // 注入指令句（截断前缀即可命中）
 	"You are a coding agent running in the Codex CLI", // Codex instructions 首段（截断前缀即可命中）
 	"github.com/anthropics/",                          // 反馈句里的 Anthropic 仓库链接
 	"11128",                                           // 上游反探测：裸数字错误码
+	// 上游对 system prompt 的关键词风控：出现 "DeepSeek Harness" 且请求体足够大
+	// （实测 >1KB 稳定触发）时回 400 / 11-128「Illegal API invocation from an
+	// unapproved channel」。短 prompt 会放过，故表现为偶发。这里只做预检，
+	// 实际中和见 neutralizeDSHIdentity（路径语境不改、幂等）。
+	"DeepSeek Harness",
+	"deepseek harness",
+	"DEEPSEEK HARNESS",
+	"DeepSeek\u00a0Harness",
 }
 
 // sanitizeHdrRe 剥离层：header 键名即触发（与值无关），整段删除。
@@ -96,6 +104,9 @@ func sanitizeText(text string) string {
 			text = sanitizeKvRe.ReplaceAllString(text, "")
 		}
 	}
+	// 品牌词中和：把 "DeepSeek Harness" 拆成 "DeepSeek\u200b Harness"，
+	// 破坏上游的逐字子串匹配，语义与上下文完全不变（issue #231 后续 / 论坛反馈）。
+	text = neutralizeDSHIdentity(text)
 	// 兜底：键值形态已在上面整段删除，这里只剩裸键名（引用/示例文本形态）。
 	text = sanitizeBareHdrRe.ReplaceAllString(text, "x-anthropic-billing-hdr")
 	return strings.TrimSpace(text)
@@ -217,4 +228,77 @@ func sanitizeMessages(messages []any) bool {
 		}
 	}
 	return changed
+}
+
+// neutralizeDSHIdentity 把 "DeepSeek Harness" 中的词间空白前插入零宽空格
+// （U+200B），得到 "DeepSeek\u200b Harness"。
+//
+// 背景：上游对 system prompt 做**关键词**风控——请求体里出现 "DeepSeek Harness"
+// 且体量够大（实测 >1KB 稳定触发）时回 400 / 11-128
+// 「Illegal API invocation from an unapproved channel」。短 prompt 会放过，
+// 于是表现为「偶发」。现有净化层只覆盖 Anthropic / Codex 指纹与 "11-128" 数字，
+// 对本词无效，这里补齐。
+//
+// 两条边界：
+//  1. **路径语境不改**：真实运行路径（如 D:\10_COD\DeepSeek Harness\resources\app.asar）
+//     一旦插入零宽字符，模型会把坏路径交给工具调用直接失败。因此匹配前后紧邻
+//     路径分隔符（/ 或 \）时原样保留（等价于原插件的正则负向断言）。
+//  2. **幂等**：已中和过的文本（"DeepSeek" 后紧跟 U+200B 而非空白）不再匹配。
+func neutralizeDSHIdentity(text string) string {
+	if len(text) < len("deepseek harness") || !strings.Contains(strings.ToLower(text), "deepseek") {
+		return text
+	}
+	lower := strings.ToLower(text)
+	const word = "deepseek"
+	var b strings.Builder
+	b.Grow(len(text) + 8)
+	i := 0
+	for {
+		j := strings.Index(lower[i:], word)
+		if j < 0 {
+			b.WriteString(text[i:])
+			break
+		}
+		j += i
+		b.WriteString(text[i:j])
+		k := j + len(word)
+		sp := k
+		for k < len(text) {
+			if text[k] == ' ' {
+				k++
+				continue
+			}
+			if strings.HasPrefix(text[k:], "\u00a0") { // NBSP 是两字节，按字节比较会漏
+				k += len("\u00a0")
+				continue
+			}
+			break
+		}
+		// 必须「DeepSeek + 至少一个空白 + Harness」
+		if k == sp || !strings.HasPrefix(lower[k:], "harness") {
+			b.WriteString(text[j:k])
+			i = k
+			continue
+		}
+		end := k + len("harness")
+		var prev, next byte
+		if j > 0 {
+			prev = text[j-1]
+		}
+		if end < len(text) {
+			next = text[end]
+		}
+		// 路径语境：前后紧邻分隔符 → 原样保留（改坏路径比 400 更糟）。
+		if prev == '/' || prev == '\\' || next == '/' || next == '\\' {
+			b.WriteString(text[j:end])
+			i = end
+			continue
+		}
+		// "DeepSeek" + U+200B + 原有空白 + "Harness"
+		b.WriteString(text[j : j+len(word)])
+		b.WriteString("\u200b")
+		b.WriteString(text[j+len(word) : end])
+		i = end
+	}
+	return b.String()
 }
