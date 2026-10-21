@@ -1517,3 +1517,22 @@ process.stdout.write(JSON.stringify({
 			strings.TrimSpace(string(out)), want)
 	}
 }
+
+// 模型上限徽标的接线齐备性：台账字段不接线 / 函数改名 / 徽标漏拼，
+// 表现为「后端有数据、面板永远不显示」，Go 编译与 JS 语法检查都发现不了。
+func TestPanelModelLimitBadgeWiring(t *testing.T) {
+	js, err := os.ReadFile("app.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		"mdLimits = Array.isArray(d.model_limits)",
+		"function mdLimitTag(",
+		"function mdLimitOf(",
+		"限流 ' + (lim.count || 1) + ' 次",
+	} {
+		if !bytes.Contains(js, []byte(want)) {
+			t.Fatalf("app.js 缺少 %s", want)
+		}
+	}
+}

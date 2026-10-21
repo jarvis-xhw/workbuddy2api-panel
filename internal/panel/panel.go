@@ -276,11 +276,12 @@ func (p *Panel) overview(w http.ResponseWriter, r *http.Request) {
 		"accounts":        p.cfg.Pool.List(),
 		// model_locks 模型级限流全清单（哪些模型不能用、锁了几个号、还要锁多久）：
 		// 与 accounts 的账号池视图互补，前端「模型锁池」表直接渲染。无锁时为 null。
-		"model_locks": p.cfg.Pool.ModelLockView(),
+		"model_locks":  p.cfg.Pool.ModelLockView(),
+		"model_limits": p.cfg.Pool.ModelLimitHistory(),
 		// 到期提醒快照的节奏与年龄：界面轮询是 5 秒级，但卡片数据只随余额后台刷新
 		// 更新（默认每 5 分钟）——把这两个数透出，前端才能如实标注「x 分钟前更新」。
-		"balance_refresh_sec":    p.balanceRefreshSec(),
-		"balance_refreshed_at":   p.balanceRefreshedAt(),
+		"balance_refresh_sec":  p.balanceRefreshSec(),
+		"balance_refreshed_at": p.balanceRefreshedAt(),
 	})
 }
 
@@ -466,7 +467,10 @@ func (p *Panel) models(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusServiceUnavailable, "没有可用账号：请先在面板添加账号再查询")
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "models": out})
+	// model_limits：模型级限流台账（跨重启保留，最多 7 天）。上游目录**没有**任何静态
+	// 配额字段（实测 /v3/config 只有 limitHint / requestMaxStepLimit），「模型上限」
+	// 只能靠 6004 的实际命中来观测——这里把它作为模型表的注解一并下发。
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "models": out, "model_limits": p.cfg.Pool.ModelLimitHistory()})
 }
 
 // panelModelEntry 构造单个模型条目（两域共用）：id 带 realm 前缀（调用值即显示值），

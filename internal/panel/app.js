@@ -12,6 +12,7 @@ let refTimer = null;
 /* 视图级筛选状态（模块级声明放在文件顶部，避免顶层 go() 早于声明执行时踩 TDZ）。 */
 let mdFilter = { q: '', realm: '', cap: '', effort: '', promo: '', sort: 'default' };
 let mdAll = [], mdProbes = {}, mdProbeOf = () => undefined;
+let mdLimits = []; // 模型级限流台账（6004 历史，来自 /panel/api/models 的 model_limits）
 let mdLocks = [], mdRecent = [];
 let reqFilter = { q: '', outcome: '' };
 let reqEntries = [];
@@ -653,6 +654,7 @@ async function loadModels() {
       api('request_metrics').catch(() => ({})),
     ]);
     mdAll = d.models || [];
+    mdLimits = Array.isArray(d.model_limits) ? d.model_limits : [];
     mdProbes = pr.probes || {};
     mdLocks = Array.isArray(st.model_locks) ? st.model_locks : [];
     mdRecent = Array.isArray(rm.recent) ? rm.recent : [];
@@ -794,6 +796,13 @@ function mdAvailabilityTag(m) {
 }
 
 // mdRowHtml 单个模型行（纯渲染，便于独立测试）。
+// mdLimitOf 取该模型的限流台账（6004 命中历史）。id 形如 cn:glm-5.2，
+// 台账按 realm + 裸模型名存，直接拼回同名键即可（同名模型两域独立计数）。
+function mdLimitOf(id) {
+  const hit = (mdLimits || []).find(e => (e.realm || '') + ':' + (e.model || '') === id);
+  return hit || null;
+}
+
 function mdRowHtml(m, pr) {
   const eff = (m.supported_efforts || []).slice();
   if (m.can_disable_thinking && eff.length && !eff.includes('off')) eff.push('off（可关）');
@@ -807,12 +816,24 @@ function mdRowHtml(m, pr) {
   if (m.supports_reasoning && !m.can_disable_thinking) caps.push('<span class="tag warn">思考常开</span>');
   const capHtml = caps.length ? '<div class="id" style="margin-top:2px">' + caps.join(' ') + '</div>' : '';
   const tip = m.description ? ' title="' + esc(m.description) + '"' : '';
-  return '<tr><td class="mark" aria-hidden="true"><i></i></td><td class="who"' + tip + '><div class="nm"><span class="mid">' + esc(m.id) + '</span>' + mdAvailabilityTag(m) + '</div><div class="id">' + esc(m.name || '') + '</div>' + capHtml + '</td>' +
+  return '<tr><td class="mark" aria-hidden="true"><i></i></td><td class="who"' + tip + '><div class="nm"><span class="mid">' + esc(m.id) + '</span>' + mdAvailabilityTag(m) + mdLimitTag(m) + '</div><div class="id">' + esc(m.name || '') + '</div>' + capHtml + '</td>' +
     '<td class="num">' + rateCell(m) + '</td>' +
     '<td>' + (m.default_effort ? '<span class="tag ok">' + esc(m.default_effort) + '</span>' : '<span style="color:var(--ink-3)">—</span>') + '</td>' +
     '<td class="efs" style="white-space:normal">' + effs + '</td>' +
     '<td class="num">' + (m.context_length ? Math.round(m.context_length / 1000) + 'K' : '—') + '</td>' +
     outCell(m, pr) + '</tr>';
+}
+
+// mdLimitTag 「模型上限」观测徽标：上游只在撞上限（6004）时给重置时间，
+// 目录本身没有配额字段——有台账就显示次数 + 最近重置时刻，没有则不占位。
+function mdLimitTag(m) {
+  const lim = mdLimitOf(m.id);
+  if (!lim) return '';
+  const when = lim.reset_at || lim.until || '';
+  const tip = '24h 内触发 ' + (lim.count || 1) + ' 次模型级限流'
+    + (lim.reason ? '（' + lim.reason + '）' : '')
+    + (when ? '；最近重置：' + when : '');
+  return ' <span class="tag warn" title="' + esc(tip) + '" style="cursor:help">限流 ' + (lim.count || 1) + ' 次</span>';
 }
 
 function renderModels() {

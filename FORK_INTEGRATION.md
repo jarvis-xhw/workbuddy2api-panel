@@ -110,6 +110,24 @@ issue #81 的现场结论：客户端把 `tool_call.id` 截断到 40 字符，�
 `max_tokens=128000` 三种形态均返回 200，**当前复现不了**该 400；本补丁是按上游灰度收紧
 的防御性处理，不改变任何成功请求的语义。
 
+## 4.6 模型上限可见性（2026-10-21）
+
+用户中午撞到 429「模型使用上限」，但面板里看不到是哪个模型、什么时候重置。核查结论：
+
+- 上游 **目录不提供任何静态配额字段**（实测 `/v3/config` 只有全局 `limitHint`、
+  `requestMaxStepLimit`、`tokenUsageThresholds`，每个模型只有 context/maxTokens/credits 等），
+  所以「上限」只能靠 **6004 实际命中**观测。
+- 旧面板的 `model_locks` 只显示**当前仍未过期**的锁，冷却一过就什么都看不到。
+
+本 fork 增加持久化台账：
+
+- `Pool.modelLimits`（`state.json` 的 `model_limits`，保留 7 天）记录每个
+  (realm, 模型) 的 `last_at / until / reset_at / count(24h) / reason`；
+- HTTP 429 与「200 + SSE error 帧」两种 6004 形态都会写入（都走 `applyErrorPolicy`）；
+- `/panel/api/models` 与 `/panel/api/overview` 下发 `model_limits`；
+- 面板「模型与档位」在模型名旁显示 `限流 N 次` 徽标，悬停显示 24h 次数与最近重置时刻；
+  重启后仍可见（`state.json` 持久化）。
+
 ## 5. 冲突解决记录（关键语义决策）
 
 1. **#158 × #232/#220/#144**：`main.go` 启动装配与热重载两处冲突，均为「两边各加一行

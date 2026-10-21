@@ -153,3 +153,42 @@ func (p *Pool) ModelLockView() []ModelLockRow {
 	})
 	return out
 }
+
+// ModelLimitEvent 单个 (域, 模型) 的**限流台账**：最近一次撞上限的时刻、上游声明的
+// 重置墙钟、24 小时内的命中次数。
+//
+// 与 ModelLockView 的区别：LockView 只描述「此刻还锁着」的冷却（过期即消失），
+// 本结构是**事后可追溯**的历史——用户中午撞了 429、下午再看面板仍能看到
+// 「哪个模型、撞了几次、最近一次什么时候重置」，这正是「模型上限」在网关侧
+// 唯一可得的观测（上游目录不提供任何静态配额字段）。
+type ModelLimitEvent struct {
+	Realm   string    `json:"realm"`
+	Model   string    `json:"model"`
+	LastAt  time.Time `json:"last_at"`
+	Until   time.Time `json:"until"`
+	ResetAt time.Time `json:"reset_at"`
+	Count   int       `json:"count"`
+	Reason  string    `json:"reason,omitempty"`
+}
+
+// ModelLimitHistory 返回最近 7 天内的模型级限流台账（按最近命中倒序）。
+func (p *Pool) ModelLimitHistory() []ModelLimitEvent {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	if len(p.modelLimits) == 0 {
+		return nil
+	}
+	cut := time.Now().Add(-modelLimitKeep)
+	out := make([]ModelLimitEvent, 0, len(p.modelLimits))
+	for _, ev := range p.modelLimits {
+		if ev.LastAt.IsZero() || ev.LastAt.Before(cut) {
+			continue
+		}
+		out = append(out, ev)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].LastAt.After(out[j].LastAt) })
+	return out
+}
+
+// modelLimitKeep 台账保留窗口：7 天（与请求日志归档默认保留期同口径）。
+const modelLimitKeep = 7 * 24 * time.Hour

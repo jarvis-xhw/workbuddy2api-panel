@@ -30,6 +30,10 @@ type Pool struct {
 	// 探索 ≥ 窗口时，本次 pick 生效层切 tier 1-only（探索=搭车改道，零新增上游请求）。
 	// 0 = 关停（完全回到现状行为）。
 	costExploreInterval time.Duration
+	// modelLimits 模型级限流台账（6004 等），key = realm + "\x1f" + model。
+	// 跨重启保留：面板据此显示「这个模型今天撞了几次上限、最近什么时候重置」，
+	// 而不是只在冷却未过期时才能看到（旧 ModelLockView 的行为）。
+	modelLimits map[string]ModelLimitEvent
 	// exploreLast 各 (realm, 模型) 的上次探索时刻，键 = realm + "\x1f" + model。
 	// 运行态（不持久化，同 lastUsed/usedSeq 口径）：重启归零 → 每个仍冻结的
 	// (域, 模型) 多至 1 次即时重探；已毕业号经 ModelCosts 恢复 tier，学费不重付。
@@ -108,6 +112,7 @@ func New(stateFp string) *Pool {
 		// config 显式 "0" 关停（SetCostExploreInterval(0)）。
 		costExploreInterval: defaultCostExploreInterval,
 		exploreLast:         map[string]time.Time{},
+		modelLimits:         map[string]ModelLimitEvent{},
 	}
 	if stateFp != "" {
 		p.load()

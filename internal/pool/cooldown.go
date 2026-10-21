@@ -228,6 +228,7 @@ func (p *Pool) CooldownSoftForModel(uid string, base time.Duration, resetAt time
 				ResetAt: resetAt,
 				Reason:  reason,
 			}
+			p.recordModelLimitLocked(e, model, e.modelCooldowns[model].Until, resetAt, reason)
 		} else {
 			// 无解析时间（普通软冷却）：有界退避（base 起按 softStreak 翻倍、封顶
 			// softRateMax）。注意：**在软冷却中**（until 未到期）时不推进/不延长。
@@ -239,6 +240,7 @@ func (p *Pool) CooldownSoftForModel(uid string, base time.Duration, resetAt time
 			e.coolKind = CoolSoft
 			e.reason = reason
 			clearRoutingModelCooldownsLocked(e)
+			p.recordModelLimitLocked(e, model, e.until, time.Time{}, reason)
 		}
 		p.dirty.Store(true)
 	}
@@ -273,6 +275,7 @@ func (p *Pool) RecordModelRateLimitAudit(uid, model, reason string) {
 		Reason:    reason,
 		AuditOnly: true,
 	}
+	p.recordModelLimitLocked(e, model, until, time.Time{}, reason)
 	p.dirty.Store(true)
 }
 
@@ -560,3 +563,34 @@ func nextDay4AM(now time.Time) time.Time {
 // 任务每 5 分钟到达这里，全清会把限流冷却实际寿命压到一个刷新周期内）。
 // 注意：不碰熔断器——熔断到期（breakerUntil 过期）或下次 chat 成功（NoteSuccess）才恢复。
 // reviveCoolingLocked 已迁至 transition.go（状态机迁移唯一权威实现）。
+
+// recordModelLimitLocked 记录一次模型级限流观测（6004 等），写进跨重启台账。
+// 调用方必须持 p.mu 写锁。24 小时内重复命中累加 Count，超过 24h 重新计数。
+func (p *Pool) recordModelLimitLocked(e *entry, model string, until, resetAt time.Time, reason string) {
+	if e == nil || model == "" {
+		return
+	}
+	now := time.Now()
+	realm := e.a.Realm()
+	key := realm + "\x1f" + model
+	ev := p.modelLimits[key]
+	if ev.LastAt.IsZero() || now.Sub(ev.LastAt) > 24*time.Hour {
+		ev.Count = 0
+	}
+	ev.Realm = realm
+	ev.Model = model
+	ev.LastAt = now
+	ev.Count++
+	if !until.IsZero() {
+		ev.Until = until
+	}
+	if !resetAt.IsZero() {
+		ev.ResetAt = resetAt
+	}
+	ev.Reason = reason
+	if p.modelLimits == nil {
+		p.modelLimits = map[string]ModelLimitEvent{}
+	}
+	p.modelLimits[key] = ev
+	p.dirty.Store(true)
+}
