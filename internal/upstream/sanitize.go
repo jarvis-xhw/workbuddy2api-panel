@@ -6,6 +6,7 @@
 package upstream
 
 import (
+	"log"
 	"regexp"
 	"strings"
 )
@@ -106,7 +107,11 @@ func sanitizeText(text string) string {
 	}
 	// 品牌词中和：把 "DeepSeek Harness" 拆成 "DeepSeek\u200b Harness"，
 	// 破坏上游的逐字子串匹配，语义与上下文完全不变（issue #231 后续 / 论坛反馈）。
-	text = neutralizeDSHIdentity(text)
+	// 命中时打一行日志：这是「补丁到底有没有在真实请求上生效」的唯一观测点。
+	if n := neutralizeDSHIdentity(text); n != text {
+		text = n
+		log.Printf("[payload] dsh_identity: neutralized \"DeepSeek Harness\" for upstream")
+	}
 	// 兜底：键值形态已在上面整段删除，这里只剩裸键名（引用/示例文本形态）。
 	text = sanitizeBareHdrRe.ReplaceAllString(text, "x-anthropic-billing-hdr")
 	return strings.TrimSpace(text)
