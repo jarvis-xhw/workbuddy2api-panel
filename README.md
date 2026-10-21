@@ -1099,3 +1099,7 @@ Web 面板「账号池与流量治理」可分别配置策略和账号顺序，�
 并额外落地 issue #81 的 tool_call id 唯一化补丁。逐条清单、未合并 PR 的原因与冲突
 处理记录见 [docs/fork-integration-2026-10-20.md](FORK_INTEGRATION.md)。
 多池（Trae / ZCode / AutoClaw）大改位于独立分支 `feature/multi-pool-183`。
+
+> [!NOTE]
+> 上游已于 **2026-10-21 宣布停止维护**（issue / PR 清零）。本 fork 已同步上游最后一次
+> 更新（含 `11-128` 业务码字面量修复 `d809396d`），后续在本仓库继续维护。
