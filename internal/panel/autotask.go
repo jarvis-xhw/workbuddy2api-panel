@@ -631,12 +631,10 @@ func (p *Panel) accountTaskAuto(w http.ResponseWriter, r *http.Request) {
 	if a == nil {
 		return
 	}
-	// 企业版 / 企业切换会话 / 静态 API Key：行为事件会被上游静默丢弃或直接 403，
-	// 执行任何成长任务都是零收益白跑（含真实对话配额）——直接拒绝并给出修复路径。
-	if !a.SupportsPersonalGrowth() || a.IsEnterpriseSession() {
-		if a.IsEnterpriseSession() {
-			writeErr(w, http.StatusUnprocessableEntity,
-				"该账号为企业版/企业切换会话（token_source=enterprise_switch），无个人成长体系，成长任务行为事件会被上游忽略；请移除账号后以个人身份重新登录")
+	// 企业版与静态 API Key 没有个人成长体系；个人账号的 token_source 不影响此判断。
+	if !a.SupportsPersonalGrowth() {
+		if a.IsEnterprise() {
+			writeErr(w, http.StatusUnprocessableEntity, "企业版账号无个人成长任务体系")
 		} else {
 			writeErr(w, http.StatusUnprocessableEntity, "API Key 账号无签到/成长任务体系")
 		}
@@ -1276,12 +1274,10 @@ func (p *Panel) accountTaskAutoAll(w http.ResponseWriter, r *http.Request) {
 	if a == nil {
 		return
 	}
-	// 企业版 / 企业切换会话 / 静态 API Key：行为事件会被上游静默丢弃或直接 403，
-	// 执行任何成长任务都是零收益白跑（含真实对话配额）——直接拒绝并给出修复路径。
-	if !a.SupportsPersonalGrowth() || a.IsEnterpriseSession() {
-		if a.IsEnterpriseSession() {
-			writeErr(w, http.StatusUnprocessableEntity,
-				"该账号为企业版/企业切换会话（token_source=enterprise_switch），无个人成长体系，成长任务行为事件会被上游忽略；请移除账号后以个人身份重新登录")
+	// 企业版与静态 API Key 没有个人成长体系；个人账号的 token_source 不影响此判断。
+	if !a.SupportsPersonalGrowth() {
+		if a.IsEnterprise() {
+			writeErr(w, http.StatusUnprocessableEntity, "企业版账号无个人成长任务体系")
 		} else {
 			writeErr(w, http.StatusUnprocessableEntity, "API Key 账号无签到/成长任务体系")
 		}

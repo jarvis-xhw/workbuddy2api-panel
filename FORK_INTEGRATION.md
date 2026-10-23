@@ -34,7 +34,7 @@
 | 193 | 静态 API Key 账号（无成长体系 / 企业口径额度） | `auth`、`panel`、`scheduler` |
 | 185 | 6021 `queue.full` 归为渠道级忙：不罚号、不轮转、503 透传 | `server`、`upstream` |
 | 178 | 账号备注 + 积分到期提醒折叠 | `panel` |
-| 162 | 企业切换会话（`token_source=enterprise_switch`）门控 | `auth`、`scheduler`、`panel` |
+| 162 | 企业切换会话门控（已撤销：`token_source=enterprise_switch` 也可出现于个人账号） | `auth`、`scheduler`、`panel` |
 | 159 | 剥离 content 里的 `reasoning_text` 片段，修 11101 | `upstream/payload.go` |
 | 158 | 按地区独立配置轮询 / 顺序耗尽调度 | `pool`、`cmd/server` |
 | 144 | 出站 DNS 可指定（`dns_servers` / `WB2A_DNS`） | `upstream/dns.go` |
@@ -137,10 +137,9 @@ issue #81 的现场结论：客户端把 `tool_call.id` 截断到 40 字符，�
 3. **#212 × #138/#205**：`client.go` 余额快照路径同时需要
    `notifyCredits`（积分历史）与 `buckets`（到期批次），合并为「企业口径分支内先 notify 再拼 bucket」；
    `scheduler.go` 的 `sweepInterval`（#205）与 `lastBalanceRefresh`（#212）两个 atomic 字段并存。
-4. **#193 × #162**：`SupportsPersonalGrowth()` 只覆盖企业版与 API Key，**不覆盖**
-   `enterprise_switch` 会话，因此门控统一写成
-   `!a.SupportsPersonalGrowth() || a.IsEnterpriseSession()`，并在拒绝时按类型给不同提示
-   （企业切换会话 → 重登指引；API Key → 无成长体系）。
+4. **#193 × #162**：`token_source=enterprise_switch` 也可能出现在个人账号的
+   OAuth 凭据中，不能据此认定没有个人成长体系。门控统一使用
+   `!a.SupportsPersonalGrowth()`，仅排除非空 `enterpriseId` 的企业版和静态 API Key。
 5. **#193 × #212**：`UserResourceSnapshot` 的企业分流改用 `a.UsesEnterpriseBilling()`
    （企业版 + API Key），同时保留 #212 的按日聚合与我们新增的余额观察者回调。
 6. **#183（实验分支）**：`ServeHTTP` 被两边同时改写，重写为「先 zcode/trae/autoclaw 分流，

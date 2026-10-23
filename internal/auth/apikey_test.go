@@ -1,6 +1,7 @@
 package auth
 
 import (
+	"encoding/base64"
 	"testing"
 	"time"
 )
@@ -89,6 +90,7 @@ func TestSupportsPersonalGrowth(t *testing.T) {
 		want bool
 	}{
 		{"个人号", "", "at", true},
+		{"带 enterprise_switch 标记的个人号", "", "hdr." + base64.RawURLEncoding.EncodeToString([]byte(`{"sub":"u1","token_source":"enterprise_switch"}`)) + ".sig", true},
 		{"企业版", "ent-1", "at", false},
 		{"静态 API Key", "", "ck_abc.def", false},
 	}

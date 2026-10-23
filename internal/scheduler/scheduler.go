@@ -553,7 +553,7 @@ func (s *Scheduler) runActivity(ctx context.Context) {
 		// （不报错），但它唯一的作用是点亮 growth 连登天数 / 解锁 first_buddy 领养——
 		// 这两者对二者都是 403（「growth system is only available for personal users」），
 		// 即**零收益**。该类"静默无效"最易被忽略（日志无异常），故显式跳过。
-		if !a.SupportsPersonalGrowth() || a.IsEnterpriseSession() {
+		if !a.SupportsPersonalGrowth() {
 
 			continue
 		}

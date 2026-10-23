@@ -223,13 +223,8 @@ func (p *Panel) startGrowthQueue(concurrency int, growth bool) (started bool, to
 			if a.IsGlobal() {
 				return
 			}
-			// 企业版 / 企业切换会话 / 静态 API Key 门控：任务端点上游一律 403 或被静默
-			// 丢弃（200 不计分），每项都是零收益白跑（含 expert_5 等真实对话配额），故不入队；
-			// 企业切换会话额外给出重登指引（见 auth.IsEnterpriseSession）。
-			if !a.SupportsPersonalGrowth() || a.IsEnterpriseSession() {
-				if a.IsEnterpriseSession() {
-					log.Printf("panel: WARN 队列跳过 uid=%s nickname=%q：凭证为企业切换会话（token_source=enterprise_switch），成长任务行为事件会被上游静默丢弃；请移除该账号，在浏览器退出企业切换（个人身份）后重新登录", a.UID, a.Nickname)
-				}
+			// 企业版与静态 API Key 无个人成长体系，不加入任务队列。
+			if !a.SupportsPersonalGrowth() {
 				return
 			}
 			if growth {
