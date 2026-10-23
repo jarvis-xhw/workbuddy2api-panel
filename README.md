@@ -278,7 +278,7 @@ curl -s http://localhost:7863/healthz
 # {"healthy":0,"total":0,"service":"workbuddy2api"}
 ```
 
-启动后打开 **`http://localhost:7863/panel/`**，用面板「添加账号」完成登录（见下节）。
+启动后打开 **`http://localhost:7863/panel/`**，用面板「添加账号」完成登录（见下节）。访问根路径 `/` 也会跳转到面板。
 
 常用运维命令：
 
@@ -560,6 +560,8 @@ WARN: [server] stream ...: saw M native tool call block(s) but repaired none (to
 | 猫猫旅行 | `schedule.travel_enabled` | `travel_hours` `[9, 21]` 整点 | 独立排程：无猫领养 / `idle` 派出 / `arrived` 领奖 |
 | 保活 | `schedule.keepalive_enabled` | `keepalive_hours` `[22]` 整点 | 全账号刷新 token；session 失效**连续 3 次**才自动禁用 |
 | 夜猫子 | `schedule.blackcat_enabled` | `blackcat_hours` `[23]` 整点 | **先查任务进度再决定**：`black_cat` 未达标才在 23:00–08:00 计数窗口内补足 glm-5.2 短对话（每天 1 次累计 3 天，漏跑次日窗口自动补） |
+
+保活只能使用仍有效的 refresh token 续期；`expiresAt` 是 access token 的到期时间，不能保证官方会话一直有效。若官方明确返回 `12153` / `invalid_grant` 且刷新凭据已被拒绝，需要在面板重新授权账号，重复刷新旧凭据无法恢复会话。
 
 #### 禁用账号与保号任务（`schedule.include_disabled_in_tasks`）
 
