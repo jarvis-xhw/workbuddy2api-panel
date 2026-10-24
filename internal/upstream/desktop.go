@@ -383,6 +383,22 @@ func (c *Client) MarketExpertList(a *auth.Auth, expertType string) ([]MarketExpe
 	if expertType != "" {
 		body["expert_type"] = expertType
 	}
+	return c.marketExpertQuery(a, body)
+}
+
+// MarketExpertSearch 按关键词搜索专家市场（按名字定位特定专家）。
+//
+// 用途：expert_use_* / WorkBuddy_Valorant 这类「点名专家」任务要求 expert_actual_use
+// 的 id 与任务绑定的专家一致；market 的列表接口支持 keyword（实测 2026-10：
+// keyword="抖音策略师" 返回 10 条、目标 ex_FbY5nlWTqDod 在首位命中），比翻 reco 榜
+// 更稳（点名专家多半不在前 20 推荐位）。
+func (c *Client) MarketExpertSearch(a *auth.Auth, keyword string) ([]MarketExpert, error) {
+	body := map[string]any{"page": 1, "page_size": 50, "keyword": keyword, "expert_type": "agent"}
+	return c.marketExpertQuery(a, body)
+}
+
+// marketExpertQuery 专家市场查询的公共实现（list / search 共用一套头与信封解析）。
+func (c *Client) marketExpertQuery(a *auth.Auth, body map[string]any) ([]MarketExpert, error) {
 	raw, err := json.Marshal(body)
 	if err != nil {
 		return nil, err

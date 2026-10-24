@@ -1659,6 +1659,17 @@ const AUTO_TASKS = {
   'Sequential_Tasks_7': '体验灵感功能（预留，疑 PC 口径）：accept → 灵感事件组（PC+mp 双形态）→ 领奖（判据待解锁验证）'
 };
 
+// 点名专家任务（expert_use_* / WorkBuddy_Valorant）：任务码随活动下发，无法静态列举，
+// 前端按前缀/白名单识别，描述与后端 namedExpertAutoAction 保持一致。
+const NAMED_EXPERT_CODES = { 'WorkBuddy_Valorant': 1 };
+function autoTaskDesc(code) {
+  if (AUTO_TASKS[code]) return AUTO_TASKS[code];
+  if (/^expert_use_/.test(code) || NAMED_EXPERT_CODES[code]) {
+    return '点名专家召唤+真实对话（专家市场 id 绑定，2026-10 实测点亮）';
+  }
+  return '';
+}
+
 function openTasks(uid) {
   taskUID = uid;
   $('taskWho').textContent = uid.slice(0, 16);
@@ -1737,7 +1748,7 @@ async function loadTasks() {
         : '<span class="tag mute">未接受</span>';
       const acted = t.claimed || t.locked ? ''
         : t.claimable ? '<button class="xs primary" data-t="claim" data-c="' + esc(t.task_code) + '">领取</button>'
-        : AUTO_TASKS[t.task_code] ? '<button class="xs primary" data-t="auto" data-c="' + esc(t.task_code) + '" title="' + esc(AUTO_TASKS[t.task_code]) + '">一键完成</button>'
+        : autoTaskDesc(t.task_code) ? '<button class="xs primary" data-t="auto" data-c="' + esc(t.task_code) + '" title="' + esc(autoTaskDesc(t.task_code)) + '">一键完成</button>'
         : t.accept_status === 'accepted' ? ''
         : '<button class="xs" data-t="accept" data-c="' + esc(t.task_code) + '">接受</button>';
       // 操作指引（description/task_desc）挂 title 提示：如何完成交给用户看

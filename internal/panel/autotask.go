@@ -13,6 +13,8 @@
 //     （template_used / playbook_prompt_send / wbx_design_canvas_*），纯 API 可点亮（三账号实测）
 //   - expert_5 / Expert_team_use_3：真实专家列表 + 召唤链 + 真实 chat（服务端 requestId）
 //   - expert_actual_use（三账号实测）
+//   - expert_use_* / WorkBuddy_Valorant（点名专家）：任务绑定 expertId 的召唤链 + 真实对话
+//   - expert_actual_use（2026-10-24 实测：两账号 4 位专家逐个 +50 分 +5 能）
 //   - Hp_Appearance：appearance/set + appearance_skin_apply 事件（两账号实测）
 //
 // 仍未破解：skill_1（疑似要求真实 Skill 工具调用）。
@@ -29,6 +31,7 @@ import (
 	"log"
 	"math/rand/v2"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
@@ -176,24 +179,82 @@ var autoActions = []autoAction{
 	},
 }
 
+// expertNamedTaskCodes 非 expert_use_ 前缀、但判据同为「点名专家召唤+对话」的活动任务。
+//
+// 这类任务的 jump_url 只有 workbuddy://expert（不带 expertId），专家只能按标题
+// 书名号里的名字在专家市场反查；事件形状与 expert_use_* 完全一致。
+var expertNamedTaskCodes = map[string]bool{
+	"WorkBuddy_Valorant": true, // 体验「无畏契约拼豆专家」（截至 2026-11-15）
+}
+
+// isNamedExpertTask 任务是否属于「点名专家」族（expert_use_* / expertNamedTaskCodes）。
+func isNamedExpertTask(code string) bool {
+	code = strings.TrimSpace(code)
+	return strings.HasPrefix(code, "expert_use_") || expertNamedTaskCodes[code]
+}
+
+// namedExpertAutoAction 构造「点名专家」任务的按需动作（任务码随活动下发，无法静态登记）。
+// 判据实测 2026-10-24：召唤链 → 真实对话（服务端 requestId）→ expert_actual_use
+// 即点亮，两账号四个专家逐个 +50 分 +5 能。
+func namedExpertAutoAction(code string) autoAction {
+	code = strings.TrimSpace(code)
+	return autoAction{
+		TaskCode: code,
+		Desc:     "点名专家召唤+真实对话（专家市场 id 绑定，2026-10 实测点亮）",
+		run: func(p *Panel, a *auth.Auth) (string, error) {
+			return runNamedExpertUse(p, a, code)
+		},
+	}
+}
+
 // autoActionFor 查任务对应的动作；无则返回 nil（不可自动化）。
 func autoActionFor(code string) *autoAction {
+	code = strings.TrimSpace(code)
 	for i := range autoActions {
-		if autoActions[i].TaskCode == strings.TrimSpace(code) {
+		if autoActions[i].TaskCode == code {
 			return &autoActions[i]
 		}
+	}
+	if isNamedExpertTask(code) {
+		act := namedExpertAutoAction(code)
+		return &act
 	}
 	return nil
 }
 
 // autoActionIndex 任务在 autoActions 中的顺序（队列执行按依赖序排；未知返回大值）。
 func autoActionIndex(code string) int {
+	code = strings.TrimSpace(code)
 	for i := range autoActions {
 		if autoActions[i].TaskCode == code {
 			return i
 		}
 	}
+	// 点名专家族排在 expert_5 之后（同属真实专家链，避免抢在依赖项前跑）。
+	if isNamedExpertTask(code) {
+		for i := range autoActions {
+			if autoActions[i].TaskCode == "expert_5" {
+				return i
+			}
+		}
+	}
 	return 1 << 20
+}
+
+// dynamicAutoActions 从账号当前任务列表里挑出「点名专家」任务，生成按需动作。
+// 供「一键完成全部」使用：静态 autoActions 表不含随活动下发的 expert_use_* 码。
+func dynamicAutoActions(tasks []upstream.Task) []autoAction {
+	var out []autoAction
+	seen := map[string]bool{}
+	for _, t := range tasks {
+		code := strings.TrimSpace(t.TaskCode)
+		if code == "" || seen[code] || !isNamedExpertTask(code) {
+			continue
+		}
+		seen[code] = true
+		out = append(out, namedExpertAutoAction(code))
+	}
+	return out
 }
 
 // mpTaskCodes 小程序口径专属下发的成长任务：默认（无 mp 头）列表不出现，
@@ -1123,6 +1184,130 @@ func runExpertBatch(p *Panel, a *auth.Auth, expertType string, count int) (strin
 	return fmt.Sprintf("已对 %d 位真实专家完成召唤+使用链（类型 %s）", ok, expertType), nil
 }
 
+// namedExpertSummonGap 点名专家链的召唤→对话间隔（真实使用节奏，沿用 expertSummonGap 口径）。
+const namedExpertSummonGap = 5 * time.Second
+
+// runNamedExpertUse 完成「点名专家」任务（expert_use_* / WorkBuddy_Valorant）。
+//
+// 判据与 expert_5 同源，只是要求 expert_actual_use 的 id 等于任务绑定的那位专家：
+//  1. 任务 jump_url 的 deeplink 里带 expertId（expert_use_*），或按标题书名号里的
+//     名字在专家市场反查（WorkBuddy_Valorant）；
+//  2. 专家市场 keyword 搜索复核真实 id/名称/版本（编造 id 服务端不计数）；
+//  3. 召唤链（web_element_click + expert_summon_click + expert_summoned）；
+//  4. 真实桌面 chat（X-Expert-Id）拿服务端 requestId；
+//  5. chat 事件链 + expert_actual_use（JOIN 服务端 requestId）上报到 /v2/report。
+//
+// 领奖由调用方（accountTaskAuto / runAutoAll）回读达标后统一执行，避免重复领取。
+func runNamedExpertUse(p *Panel, a *auth.Auth, code string) (string, error) {
+	t, err := p.taskByCode(a, code)
+	if err != nil {
+		return "", err
+	}
+	if t == nil {
+		return "该账号无此任务", nil
+	}
+	if t.Claimed {
+		return "已领取", nil
+	}
+	if t.Target > 0 && t.Current >= t.Target {
+		return fmt.Sprintf("已达标（%d/%d），无需重跑", t.Current, t.Target), nil
+	}
+	expertID := expertIDFromJump(t.JumpURL)
+	name := quotedTitleName(t.Title)
+	if expertID == "" && name == "" {
+		return "任务未提供专家 id/名称，无法绑定判据", nil
+	}
+	e, err := p.resolveMarketExpert(a, expertID, name)
+	if err != nil {
+		return "", err
+	}
+	if err := p.cfg.Upstream.ReportDesktopEvent(a, upstream.DesktopExpertSummonSequence(e)...); err != nil {
+		return "", fmt.Errorf("召唤链上报: %w", err)
+	}
+	time.Sleep(namedExpertSummonGap)
+	conv, req, err := p.cfg.Upstream.DesktopChatWithExpert(a, e.ExpertID)
+	if err != nil {
+		return "", fmt.Errorf("真实对话: %w", err)
+	}
+	time.Sleep(2 * time.Second)
+	events := append(upstream.DesktopChatSequence(conv, req, "msg-"+req[len(req)-8:], "fast-model", "fast-model"),
+		upstream.DesktopExpertActualUseEvent(e, conv, req))
+	if err := p.cfg.Upstream.ReportDesktopEvent(a, events...); err != nil {
+		return "", fmt.Errorf("使用事件上报: %w", err)
+	}
+	return fmt.Sprintf("已对「%s」(%s) 完成召唤+真实对话", e.DisplayNameZH, e.ExpertID), nil
+}
+
+// resolveMarketExpert 在专家市场定位任务点名的专家：优先按 expertId 精确匹配，
+// 无 id（WorkBuddy_Valorant）时按名称精确匹配；keyword 搜索未命中退回 reco 榜。
+func (p *Panel) resolveMarketExpert(a *auth.Auth, expertID, name string) (upstream.MarketExpert, error) {
+	keyword := name
+	if keyword == "" {
+		keyword = expertID
+	}
+	match := func(experts []upstream.MarketExpert) (upstream.MarketExpert, bool) {
+		for _, e := range experts {
+			if expertID != "" {
+				if e.ExpertID == expertID {
+					return e, true
+				}
+				continue
+			}
+			if name != "" && e.DisplayNameZH == name {
+				return e, true
+			}
+		}
+		return upstream.MarketExpert{}, false
+	}
+	if experts, err := p.cfg.Upstream.MarketExpertSearch(a, keyword); err == nil {
+		if e, ok := match(experts); ok {
+			return e, nil
+		}
+	}
+	if experts, err := p.cfg.Upstream.MarketExpertList(a, "agent"); err == nil {
+		if e, ok := match(experts); ok {
+			return e, nil
+		}
+	}
+	return upstream.MarketExpert{}, fmt.Errorf("专家市场未找到（id=%q name=%q）", expertID, name)
+}
+
+// expertIDFromJump 从任务 jump_url 解出 expertId。
+// 形如 https://www.workbuddy.cn/work/launch/?deeplink=workbuddy%3A%2F%2Fexperts%3FexpertId%3Dex_xxx%26buddy_type%3Dworkbuddy
+// （先整体 URL 解码，再取 expertId= 到下一个分隔符）。
+func expertIDFromJump(jump string) string {
+	s := jump
+	if u, err := url.QueryUnescape(s); err == nil {
+		s = u
+	}
+	i := strings.Index(s, "expertId=")
+	if i < 0 {
+		return ""
+	}
+	rest := s[i+len("expertId="):]
+	for _, sep := range []string{"&", "#", "?", " "} {
+		if j := strings.Index(rest, sep); j >= 0 {
+			rest = rest[:j]
+		}
+	}
+	return strings.TrimSpace(rest)
+}
+
+// quotedTitleName 取任务标题里「」括住的专家名（如 体验「抖音策略师」→ 抖音策略师）。
+func quotedTitleName(title string) string {
+	const open, closeMark = "「", "」"
+	i := strings.Index(title, open)
+	if i < 0 {
+		return ""
+	}
+	rest := title[i+len(open):]
+	j := strings.Index(rest, closeMark)
+	if j < 0 {
+		return ""
+	}
+	return strings.TrimSpace(rest[:j])
+}
+
 // ---------------------------------------------------------------------------
 // 全量自动完成
 // ---------------------------------------------------------------------------
@@ -1136,7 +1321,11 @@ func (p *Panel) runAutoAll(a *auth.Auth) []map[string]any {
 	var out []map[string]any
 
 	// 阶段 0：批量接受尚未接受的任务（失败不阻塞——行为事件才是进度唯一判据）。
+	// allTasks 同时供「点名专家」动态任务展开使用：expert_use_* 是随活动下发的任务码，
+	// 静态 autoActions 表不可能预先登记。
+	var allTasks []upstream.Task
 	if tasks, err := p.cfg.Upstream.ListTasks(a); err == nil {
+		allTasks = append(allTasks, tasks...)
 		var codes []string
 		for _, t := range tasks {
 			if !t.Claimed && !t.Locked && t.AcceptStatus != "accepted" && t.AcceptStatus != "completed" {
@@ -1161,6 +1350,7 @@ func (p *Panel) runAutoAll(a *auth.Auth) []map[string]any {
 
 	// 阶段 0b：小程序口径任务单独接受（默认列表不含 mp 码；失败不阻塞）。
 	if mpTasks, err := p.cfg.Upstream.ListTasksMP(a); err == nil {
+		allTasks = append(allTasks, mpTasks...)
 		var mpCodes []string
 		for _, t := range mpTasks {
 			if !t.Claimed && !t.Locked && t.AcceptStatus != "accepted" && t.AcceptStatus != "completed" {
@@ -1183,7 +1373,10 @@ func (p *Panel) runAutoAll(a *auth.Auth) []map[string]any {
 		}
 	}
 
-	for _, act := range autoActions {
+	// 静态动作表 + 本次列表里出现的动态「点名专家」动作（expert_use_* / WorkBuddy_Valorant）。
+	acts := append([]autoAction{}, autoActions...)
+	acts = append(acts, dynamicAutoActions(allTasks)...)
+	for _, act := range acts {
 		item := map[string]any{"task_code": act.TaskCode, "desc": act.Desc}
 		before, err := p.taskByCode(a, act.TaskCode)
 		if err != nil {
